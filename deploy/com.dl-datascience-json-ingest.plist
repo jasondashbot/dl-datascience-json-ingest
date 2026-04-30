@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job for dl-datascience-json-ingest.
+
+  Runs python ingest.py every 15 minutes from an always-on macOS host
+  (Reddit blocks anonymous .json calls from datacenter IPs, so we run
+  from a residential connection rather than via GitHub-hosted Actions).
+
+  Before installing, replace the placeholders below:
+    __PYTHON__       Absolute path to your python with 'requests' installed
+                     e.g. /usr/local/bin/python3 or /Users/you/.../venv/bin/python
+    __REPO__         Absolute path to your local clone of this repo
+                     e.g. /Users/you/code/dl-datascience-json-ingest
+    __API_KEY__      Your Dimension Labs Universal tracker API key
+    __LOG_DIR__      Directory for stdout/stderr logs
+                     e.g. /Users/you/Library/Logs/dl-datascience-json-ingest
+
+  Install (per-user, runs as your account; survives reboot when you log in):
+    mkdir -p __LOG_DIR__
+    cp deploy/com.dl-datascience-json-ingest.plist ~/Library/LaunchAgents/
+    # Edit ~/Library/LaunchAgents/com.dl-datascience-json-ingest.plist to fill placeholders
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dl-datascience-json-ingest.plist
+    launchctl enable gui/$(id -u)/com.dl-datascience-json-ingest
+
+  Trigger an immediate run (useful for the seed run):
+    launchctl kickstart -k gui/$(id -u)/com.dl-datascience-json-ingest
+
+  Inspect:
+    launchctl print gui/$(id -u)/com.dl-datascience-json-ingest
+    tail -f __LOG_DIR__/ingest.log
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.dl-datascience-json-ingest
+    rm ~/Library/LaunchAgents/com.dl-datascience-json-ingest.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dl-datascience-json-ingest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__REPO__/ingest.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DIMENSION_LABS_API_KEY</key>
+        <string>__API_KEY__</string>
+        <!-- Ensure /usr/local/bin and Homebrew paths are on PATH for the python interpreter -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- Run every 15 minutes. launchd may delay slightly on a busy/idle system. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Catch up if the system was off when the interval fired (best-effort). -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Don't auto-restart on failure; the next interval will try again. -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Don't stack invocations; if a previous run is still going, skip. -->
+    <key>AbandonProcessGroup</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/ingest.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
