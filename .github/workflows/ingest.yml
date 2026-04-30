@@ -1,0 +1,98 @@
+name: ingest
+
+on:
+  schedule:
+    # Every 15 minutes. Note: GitHub-hosted cron can drift several minutes under load.
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+# Don't let two ingest runs race on state.json. New runs queue rather than cancel.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DIMENSION_LABS_API_KEY: ${{ secrets.DIMENSION_LABS_API_KEY }}
+
+    steps:
+      - name: Check out main (code)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore state.json from 'state' branch
+        run: |
+          set -euo pipefail
+          git fetch origin state:state || echo "no 'state' branch yet; will be created on first commit"
+          if git rev-parse --verify state >/dev/null 2>&1; then
+            git --work-tree=. checkout state -- state.json 2>/dev/null || echo "no state.json on 'state' branch yet"
+          fi
+          if [ -f state.json ]; then
+            echo "Restored state.json ($(wc -c < state.json) bytes)"
+          else
+            echo "First run: no prior state. ingest.py will seed."
+          fi
+
+      - name: Run ingest
+        if: env.DIMENSION_LABS_API_KEY != ''
+        run: python ingest.py
+
+      - name: Run ingest (dry-run fallback when secret missing)
+        if: env.DIMENSION_LABS_API_KEY == ''
+        run: |
+          echo "::warning::DIMENSION_LABS_API_KEY secret is not set; running --dry-run."
+          python ingest.py --dry-run
+
+      - name: Persist state.json to 'state' branch
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f state.json ]; then
+            echo "No state.json produced; nothing to persist."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Build/update an orphan-style 'state' branch holding only state.json.
+          tmpdir="$(mktemp -d)"
+          cp state.json "$tmpdir/state.json"
+
+          if git ls-remote --exit-code --heads origin state >/dev/null 2>&1; then
+            git fetch origin state
+            git checkout state
+            git pull --ff-only origin state || true
+          else
+            git checkout --orphan state
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          # Replace working tree with just state.json.
+          find . -maxdepth 1 -mindepth 1 ! -name '.git' -exec rm -rf {} +
+          cp "$tmpdir/state.json" state.json
+
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "state.json unchanged; skipping commit."
+            exit 0
+          fi
+
+          git commit -m "Update state.json [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+          git push origin state
